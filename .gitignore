@@ -1,0 +1,5 @@
+# Dados do projeto (não subir para o Git)
+*.csv
+*.zip
+*.parquet
+dados/
