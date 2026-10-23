@@ -40,49 +40,8 @@ Arquivo_CFEM | ANM (dados abertos) | Arrecadação de CFEM por município, subst
 
 > Os arquivos CSV não estão no repositório por causa do tamanho. Para reproduzir, baixe-os nas fontes acima e envie para um Volume no Databricks.
 
-## Arquitetura
 
-| Camada | Descrição |
-|---|---|
-| Bronze | Dados brutos carregados como vieram, em tabelas Delta |
-| Silver | Dados limpos: tipos corretos, filtros de NCM, nomes padronizados |
-| Gold | Modelo dimensional (star schema) pronto para análise |
 
-## Modelo dimensional
-
-- **fato_comercio**: uma linha por mês, produto (NCM), país, UF, via de transporte e fluxo (exportação ou importação).
-- **fato_cfem**: uma linha por mês, município, substância e empresa.
-- **Dimensões**: `dim_tempo`, `dim_produto`, `dim_pais`, `dim_uf`, `dim_municipio`.
-
-As duas tabelas fato compartilham dimensões (dimensões conformadas), o que permite cruzar comércio exterior e arrecadação.
-
-![Modelo dimensional](docs/modelo_dimensional.png)
-
-## Estrutura do repositório
-
-```
-├── notebooks/
-│   ├── 01_bronze.py
-│   ├── 02_silver.py
-│   ├── 03_gold.sql
-│   └── 04_analises.sql
-├── docs/
-└── README.md
-```
-
-## Decisões de limpeza e modelagem
-
-- [ex.: Mantive apenas os NCM dos capítulos 72, 73 e 2601 porque...]
-- [ex.: Usei chaves naturais (NCM, código do país) porque os dados de origem já as fornecem; em um ambiente corporativo usaria chaves surrogate.]
-- [ex.: Registros com valor ou peso zerado foram tratados assim...]
-
-## Principais resultados
-
-1. [Insight 1 em linguagem de negócio]
-2. [Insight 2]
-3. [Insight 3]
-
-![Dashboard](docs/dashboard.png)
 
 ## Tecnologias
 
@@ -96,4 +55,4 @@ Databricks, Delta Lake, SQL, PySpark, Git/GitHub.
 
 ## Autor
 
-Ludmila
+Ludmila Cuha
