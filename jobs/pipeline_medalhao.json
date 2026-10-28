@@ -1,0 +1,76 @@
+{
+  "name": "comercio_aco_mineracao - pipeline medalhão",
+  "description": "Carga sob demanda do projeto Comércio Exterior de Aço e Mineração: bronze -> silver -> gold (2003-2023) -> validação de qualidade -> atualização do dashboard. Os scripts SQL ficam em /Users/<SEU_USUARIO>/comercio_aco_mineracao/sql.",
+  "tags": {
+    "projeto": "comercio_aco_mineracao",
+    "camadas": "bronze-silver-gold"
+  },
+  "max_concurrent_runs": 1,
+  "timeout_seconds": 3600,
+  "email_notifications": {
+    "on_failure": ["<SEU_EMAIL>"]
+  },
+  "tasks": [
+    {
+      "task_key": "bronze",
+      "description": "Ingestão dos CSVs do Volume em tabelas Delta (dado bruto)",
+      "sql_task": {
+        "file": {
+          "path": "/Users/<SEU_USUARIO>/comercio_aco_mineracao/sql/02_ingestao_bronze.sql",
+          "source": "WORKSPACE"
+        },
+        "warehouse_id": "<WAREHOUSE_ID>"
+      },
+      "timeout_seconds": 1800
+    },
+    {
+      "task_key": "silver",
+      "description": "Tipagem, filtro de NCM, remoção de duplicatas do CFEM",
+      "depends_on": [{"task_key": "bronze"}],
+      "sql_task": {
+        "file": {
+          "path": "/Users/<SEU_USUARIO>/comercio_aco_mineracao/sql/03_tratamento_silver.sql",
+          "source": "WORKSPACE"
+        },
+        "warehouse_id": "<WAREHOUSE_ID>"
+      },
+      "timeout_seconds": 1800
+    },
+    {
+      "task_key": "gold",
+      "description": "Modelo dimensional no período 2003-2023 e tabelas analíticas",
+      "depends_on": [{"task_key": "silver"}],
+      "sql_task": {
+        "file": {
+          "path": "/Users/<SEU_USUARIO>/comercio_aco_mineracao/sql/04_modelagem_gold.sql",
+          "source": "WORKSPACE"
+        },
+        "warehouse_id": "<WAREHOUSE_ID>"
+      },
+      "timeout_seconds": 1800
+    },
+    {
+      "task_key": "validacao",
+      "description": "Regras de qualidade nas 3 camadas; falha o job (e não atualiza o dashboard) se alguma regra não passar",
+      "depends_on": [{"task_key": "gold"}],
+      "sql_task": {
+        "file": {
+          "path": "/Users/<SEU_USUARIO>/comercio_aco_mineracao/sql/06_validacao_qualidade.sql",
+          "source": "WORKSPACE"
+        },
+        "warehouse_id": "<WAREHOUSE_ID>"
+      },
+      "timeout_seconds": 900
+    },
+    {
+      "task_key": "atualiza_dashboard",
+      "description": "Atualiza o dashboard Comércio Exterior de Aço e Mineração",
+      "depends_on": [{"task_key": "validacao"}],
+      "dashboard_task": {
+        "dashboard_id": "<DASHBOARD_ID>",
+        "warehouse_id": "<WAREHOUSE_ID>"
+      },
+      "timeout_seconds": 900
+    }
+  ]
+}

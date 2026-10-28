@@ -1,0 +1,2584 @@
+{
+  "datasets": [
+    {
+      "name": "ds_resumo_bases",
+      "displayName": "Resumo das bases",
+      "queryLines": [
+        "SELECT base, periodo_origem, periodo_analise, produtos_incluidos, qtd_produtos, tipo_produto,\n",
+        "       registros_origem, registros_silver, registros_gold, observacao\n",
+        "FROM resumo_bases\n",
+        "ORDER BY ordem\n"
+      ],
+      "catalog": "comercio_aco_mineracao",
+      "schema": "gold"
+    },
+    {
+      "name": "ds_exportacao",
+      "displayName": "Exportações (ano x categoria x produto x país x UF)",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT t.ano,\n",
+        "         MAKE_DATE(t.ano, 1, 1)                                   AS data_ano,\n",
+        "         p.categoria_produto,\n",
+        "         CASE WHEN p.categoria_produto = 'Minério de ferro'\n",
+        "              THEN 'Minério de ferro' ELSE 'Aço (cap. 72 e 73)' END AS grupo,\n",
+        "         CONCAT(p.posicao_ncm, ' - ', p.descricao_posicao)        AS produto,\n",
+        "         d.nome_pais,\n",
+        "         f.uf,\n",
+        "         f.valor_fob_usd,\n",
+        "         f.toneladas\n",
+        "  FROM fato_exportacao f\n",
+        "  JOIN dim_tempo   t ON f.sk_tempo = t.sk_tempo\n",
+        "  JOIN dim_produto p ON f.ncm      = p.ncm\n",
+        "  JOIN dim_pais    d ON f.co_pais  = d.co_pais\n",
+        "),\n",
+        "rank_pais AS (\n",
+        "  SELECT grupo, nome_pais, RANK() OVER (PARTITION BY grupo ORDER BY SUM(valor_fob_usd) DESC) AS r\n",
+        "  FROM base GROUP BY grupo, nome_pais\n",
+        "),\n",
+        "rank_uf AS (\n",
+        "  SELECT uf, RANK() OVER (ORDER BY SUM(valor_fob_usd) DESC) AS r FROM base GROUP BY uf\n",
+        "),\n",
+        "rank_produto AS (\n",
+        "  SELECT produto, RANK() OVER (ORDER BY SUM(valor_fob_usd) DESC) AS r FROM base GROUP BY produto\n",
+        ")\n",
+        "SELECT b.ano,\n",
+        "       b.data_ano,\n",
+        "       b.categoria_produto,\n",
+        "       b.grupo,\n",
+        "       CASE WHEN rp.r <= 10 THEN b.nome_pais ELSE 'Outros países' END AS pais,\n",
+        "       CASE WHEN ru.r <= 8  THEN b.uf        ELSE 'Outras UFs'    END AS uf,\n",
+        "       CASE WHEN rx.r <= 12 THEN b.produto   ELSE 'Outros produtos' END AS produto,\n",
+        "       SUM(b.valor_fob_usd) AS valor_fob_usd,\n",
+        "       SUM(b.toneladas)     AS toneladas\n",
+        "FROM base b\n",
+        "JOIN rank_pais    rp ON b.grupo = rp.grupo AND b.nome_pais = rp.nome_pais\n",
+        "JOIN rank_uf      ru ON b.uf = ru.uf\n",
+        "JOIN rank_produto rx ON b.produto = rx.produto\n",
+        "GROUP BY ALL\n",
+        "ORDER BY data_ano\n"
+      ],
+      "columns": [
+        {
+          "displayName": "Valor FOB",
+          "description": "Soma do valor FOB exportado (US$)",
+          "expression": "SUM(`valor_fob_usd`)"
+        },
+        {
+          "displayName": "Preço médio US$/t",
+          "description": "Valor FOB dividido pelas toneladas exportadas",
+          "expression": "SUM(`valor_fob_usd`) / SUM(`toneladas`)"
+        },
+        {
+          "displayName": "Peso do minério",
+          "description": "Participação do minério de ferro no valor exportado",
+          "expression": "SUM(CASE WHEN `categoria_produto` = 'Minério de ferro' THEN `valor_fob_usd` ELSE 0 END) / SUM(`valor_fob_usd`)"
+        }
+      ],
+      "catalog": "comercio_aco_mineracao",
+      "schema": "gold"
+    },
+    {
+      "name": "ds_produtos",
+      "displayName": "Produtos exportados (posição NCM)",
+      "queryLines": [
+        "SELECT CONCAT(p.posicao_ncm, ' - ', p.descricao_posicao)       AS produto,\n",
+        "       p.categoria_produto,\n",
+        "       COUNT(DISTINCT p.ncm)                                    AS qtd_ncm,\n",
+        "       SUM(f.valor_fob_usd)                                     AS valor_fob_usd,\n",
+        "       SUM(f.toneladas)                                         AS toneladas,\n",
+        "       SUM(f.valor_fob_usd) / SUM(SUM(f.valor_fob_usd)) OVER () AS pct_valor\n",
+        "FROM fato_exportacao f\n",
+        "JOIN dim_produto p ON f.ncm = p.ncm\n",
+        "GROUP BY p.posicao_ncm, p.descricao_posicao, p.categoria_produto\n",
+        "ORDER BY valor_fob_usd DESC\n"
+      ],
+      "catalog": "comercio_aco_mineracao",
+      "schema": "gold"
+    },
+    {
+      "name": "ds_cfem",
+      "displayName": "CFEM (ano x substância x município)",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT t.ano,\n",
+        "         MAKE_DATE(t.ano, 1, 1)                                         AS data_ano,\n",
+        "         f.substancia,\n",
+        "         CASE WHEN f.eh_minerio_ferro THEN 'Ferro' ELSE 'Outras substâncias' END AS grupo,\n",
+        "         CONCAT(m.municipio, ' (', m.uf, ')')                           AS municipio,\n",
+        "         f.valor_recolhido_brl\n",
+        "  FROM fato_cfem f\n",
+        "  JOIN dim_tempo     t ON f.sk_tempo         = t.sk_tempo\n",
+        "  JOIN dim_municipio m ON f.codigo_municipio = m.codigo_municipio\n",
+        "),\n",
+        "rank_substancia AS (\n",
+        "  SELECT substancia, RANK() OVER (ORDER BY SUM(valor_recolhido_brl) DESC) AS r FROM base GROUP BY substancia\n",
+        "),\n",
+        "rank_municipio AS (\n",
+        "  SELECT municipio, RANK() OVER (ORDER BY SUM(valor_recolhido_brl) DESC) AS r FROM base GROUP BY municipio\n",
+        ")\n",
+        "SELECT b.ano,\n",
+        "       b.data_ano,\n",
+        "       b.grupo,\n",
+        "       CASE WHEN rs.r <= 10 THEN b.substancia ELSE 'Demais substâncias' END AS substancia,\n",
+        "       CASE WHEN rm.r <= 12 THEN b.municipio  ELSE 'Outros municípios'  END AS municipio,\n",
+        "       SUM(b.valor_recolhido_brl) AS valor_recolhido_brl\n",
+        "FROM base b\n",
+        "JOIN rank_substancia rs ON b.substancia = rs.substancia\n",
+        "JOIN rank_municipio  rm ON b.municipio  = rm.municipio\n",
+        "GROUP BY ALL\n",
+        "ORDER BY data_ano\n"
+      ],
+      "columns": [
+        {
+          "displayName": "CFEM arrecadada",
+          "description": "Soma da CFEM recolhida (R$ nominais)",
+          "expression": "SUM(`valor_recolhido_brl`)"
+        },
+        {
+          "displayName": "CFEM do ferro",
+          "description": "CFEM recolhida sobre FERRO e MINÉRIO DE FERRO (R$)",
+          "expression": "SUM(CASE WHEN `grupo` = 'Ferro' THEN `valor_recolhido_brl` ELSE 0 END)"
+        },
+        {
+          "displayName": "Peso do ferro",
+          "description": "Participação do ferro na CFEM arrecadada",
+          "expression": "SUM(CASE WHEN `grupo` = 'Ferro' THEN `valor_recolhido_brl` ELSE 0 END) / SUM(`valor_recolhido_brl`)"
+        }
+      ],
+      "catalog": "comercio_aco_mineracao",
+      "schema": "gold"
+    },
+    {
+      "name": "ds_substancias",
+      "displayName": "Substâncias do CFEM",
+      "queryLines": [
+        "SELECT substancia,\n",
+        "       CASE WHEN eh_minerio_ferro THEN 'Ferro' ELSE 'Outras substâncias' END AS grupo,\n",
+        "       SUM(valor_recolhido_brl)                                          AS valor_recolhido_brl,\n",
+        "       SUM(valor_recolhido_brl) / SUM(SUM(valor_recolhido_brl)) OVER ()  AS pct_valor,\n",
+        "       COUNT(DISTINCT codigo_municipio)                                  AS qtd_municipios\n",
+        "FROM fato_cfem\n",
+        "GROUP BY substancia, eh_minerio_ferro\n",
+        "ORDER BY valor_recolhido_brl DESC\n"
+      ],
+      "catalog": "comercio_aco_mineracao",
+      "schema": "gold"
+    },
+    {
+      "name": "ds_indicadores",
+      "displayName": "Indicadores do período comum",
+      "queryLines": [
+        "SELECT ano,\n",
+        "       MAKE_DATE(ano, 1, 1)          AS data_ano,\n",
+        "       CAST(ano AS STRING)           AS ano_texto,\n",
+        "       preco_minerio_usd_t,\n",
+        "       var_preco_minerio_pct / 100   AS var_preco_minerio,\n",
+        "       exp_minerio_fob_usd,\n",
+        "       cfem_ferro_brl,\n",
+        "       var_cfem_ferro_pct / 100      AS var_cfem_ferro\n",
+        "FROM indicadores_periodo_comum\n",
+        "ORDER BY ano\n"
+      ],
+      "catalog": "comercio_aco_mineracao",
+      "schema": "gold"
+    },
+    {
+      "name": "ds_correlacao",
+      "displayName": "Correlações 2003-2023",
+      "queryLines": [
+        "SELECT CORR(preco_minerio_usd_t, cfem_ferro_brl) AS corr_preco_cfem,\n",
+        "       CORR(exp_minerio_fob_usd, cfem_ferro_brl) AS corr_valor_cfem\n",
+        "FROM indicadores_periodo_comum\n"
+      ],
+      "catalog": "comercio_aco_mineracao",
+      "schema": "gold"
+    }
+  ],
+  "pages": [
+    {
+      "name": "bases",
+      "displayName": "O que tem em cada base",
+      "layout": [
+        {
+          "widget": {
+            "name": "titulo_bases",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## O que tem em cada base\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "subtitulo_bases",
+            "multilineTextboxSpec": {
+              "lines": [
+                "O projeto cruza duas bases públicas: as **exportações brasileiras** (Comex Stat/MDIC) e a **arrecadação de CFEM** da mineração (ANM). Todo o dashboard usa o **período comum 2003 a 2023**. Use a página *Filtros* para recortar os anos.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "tabela_resumo_bases",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_resumo_bases",
+                  "fields": [
+                    {
+                      "name": "base",
+                      "expression": "`base`"
+                    },
+                    {
+                      "name": "periodo_origem",
+                      "expression": "`periodo_origem`"
+                    },
+                    {
+                      "name": "periodo_analise",
+                      "expression": "`periodo_analise`"
+                    },
+                    {
+                      "name": "produtos_incluidos",
+                      "expression": "`produtos_incluidos`"
+                    },
+                    {
+                      "name": "qtd_produtos",
+                      "expression": "`qtd_produtos`"
+                    },
+                    {
+                      "name": "tipo_produto",
+                      "expression": "`tipo_produto`"
+                    },
+                    {
+                      "name": "registros_origem",
+                      "expression": "`registros_origem`"
+                    },
+                    {
+                      "name": "registros_silver",
+                      "expression": "`registros_silver`"
+                    },
+                    {
+                      "name": "registros_gold",
+                      "expression": "`registros_gold`"
+                    },
+                    {
+                      "name": "observacao",
+                      "expression": "`observacao`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "base",
+                    "displayName": "base"
+                  },
+                  {
+                    "fieldName": "periodo_origem",
+                    "displayName": "período na origem"
+                  },
+                  {
+                    "fieldName": "periodo_analise",
+                    "displayName": "período analisado"
+                  },
+                  {
+                    "fieldName": "produtos_incluidos",
+                    "displayName": "produtos incluídos"
+                  },
+                  {
+                    "fieldName": "qtd_produtos",
+                    "displayName": "qtd.",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "tipo_produto",
+                    "displayName": "tipo"
+                  },
+                  {
+                    "fieldName": "registros_origem",
+                    "displayName": "registros na origem",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "registros_silver",
+                    "displayName": "após tratamento (Silver)",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "registros_gold",
+                    "displayName": "linhas na Gold",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "observacao",
+                    "displayName": "observação"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Resumo das bases"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 12,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_exportacao",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "measure(Valor FOB)",
+                      "expression": "MEASURE(`Valor FOB`)"
+                    },
+                    {
+                      "name": "monthly(data_ano)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `data_ano`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Valor FOB)",
+                  "displayName": "Exportações de minério e aço",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "monthly(data_ano)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Exportações de minério e aço",
+                "showDescription": true,
+                "description": "Valor FOB no período"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_peso_minerio",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "measure(Peso do minério)",
+                      "expression": "MEASURE(`Peso do minério`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Peso do minério)",
+                  "displayName": "Peso do minério de ferro",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Peso do minério de ferro",
+                "showDescription": true,
+                "description": "% do valor exportado"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 7,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_cfem",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "measure(CFEM arrecadada)",
+                      "expression": "MEASURE(`CFEM arrecadada`)"
+                    },
+                    {
+                      "name": "monthly(data_ano)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `data_ano`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(CFEM arrecadada)",
+                  "displayName": "CFEM arrecadada",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "monthly(data_ano)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "CFEM arrecadada",
+                "showDescription": true,
+                "description": "Todas as substâncias, R$ nominais"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 7,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_peso_ferro",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "measure(Peso do ferro)",
+                      "expression": "MEASURE(`Peso do ferro`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Peso do ferro)",
+                  "displayName": "Peso do ferro na CFEM",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Peso do ferro na CFEM",
+                "showDescription": true,
+                "description": "FERRO + MINÉRIO DE FERRO"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 7,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "secao_comex",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Exportações (Comex Stat): produtos do recorte\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_categoria",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "categoria_produto",
+                      "expression": "`categoria_produto`"
+                    },
+                    {
+                      "name": "measure(Valor FOB)",
+                      "expression": "MEASURE(`Valor FOB`)"
+                    },
+                    {
+                      "name": "categoria_produto",
+                      "expression": "`categoria_produto`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(Valor FOB)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "valor FOB",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "categoria_produto",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "categoria"
+                },
+                "color": {
+                  "fieldName": "categoria_produto",
+                  "displayName": "categoria_produto",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Minério de ferro",
+                        "color": "#B5532A"
+                      },
+                      {
+                        "value": "Ferro e aço",
+                        "color": "#2F6690"
+                      },
+                      {
+                        "value": "Obras de ferro ou aço",
+                        "color": "#81A4CD"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Valor exportado por categoria",
+                "showDescription": true,
+                "description": "Minério = NCM 2601 | Ferro e aço = cap. 72 | Obras = cap. 73"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 4,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_produtos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "produto",
+                      "expression": "`produto`"
+                    },
+                    {
+                      "name": "measure(Valor FOB)",
+                      "expression": "MEASURE(`Valor FOB`)"
+                    },
+                    {
+                      "name": "categoria_produto",
+                      "expression": "`categoria_produto`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`produto` <> 'Outros produtos'"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(Valor FOB)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "valor FOB",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "produto",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "produto"
+                },
+                "color": {
+                  "fieldName": "categoria_produto",
+                  "displayName": "categoria_produto",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Minério de ferro",
+                        "color": "#B5532A"
+                      },
+                      {
+                        "value": "Ferro e aço",
+                        "color": "#2F6690"
+                      },
+                      {
+                        "value": "Obras de ferro ou aço",
+                        "color": "#81A4CD"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "12 principais produtos (posição NCM)"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 11,
+            "width": 8,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "tabela_produtos",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_produtos",
+                  "fields": [
+                    {
+                      "name": "produto",
+                      "expression": "`produto`"
+                    },
+                    {
+                      "name": "categoria_produto",
+                      "expression": "`categoria_produto`"
+                    },
+                    {
+                      "name": "qtd_ncm",
+                      "expression": "`qtd_ncm`"
+                    },
+                    {
+                      "name": "valor_fob_usd",
+                      "expression": "`valor_fob_usd`"
+                    },
+                    {
+                      "name": "toneladas",
+                      "expression": "`toneladas`"
+                    },
+                    {
+                      "name": "pct_valor",
+                      "expression": "`pct_valor`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "produto",
+                    "displayName": "produto (posição NCM)"
+                  },
+                  {
+                    "fieldName": "categoria_produto",
+                    "displayName": "categoria"
+                  },
+                  {
+                    "fieldName": "qtd_ncm",
+                    "displayName": "NCMs",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "valor_fob_usd",
+                    "displayName": "valor FOB",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "toneladas",
+                    "displayName": "toneladas",
+                    "format": {
+                      "type": "number",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "pct_valor",
+                    "displayName": "% do valor",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Todos os produtos exportados no recorte (2003-2023)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 18,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "secao_cfem",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Arrecadação de CFEM: todas as substâncias, com o ferro em destaque\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 24,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_substancias",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "substancia",
+                      "expression": "`substancia`"
+                    },
+                    {
+                      "name": "measure(CFEM arrecadada)",
+                      "expression": "MEASURE(`CFEM arrecadada`)"
+                    },
+                    {
+                      "name": "grupo",
+                      "expression": "`grupo`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(CFEM arrecadada)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "CFEM",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "substancia",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "substância"
+                },
+                "color": {
+                  "fieldName": "grupo",
+                  "displayName": "grupo",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Ferro",
+                        "color": "#B5532A"
+                      },
+                      {
+                        "value": "Outras substâncias",
+                        "color": "#9AA5B1"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "10 substâncias que mais arrecadam",
+                "showDescription": true,
+                "description": "'Demais substâncias' soma as outras ~300"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 25,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "tabela_substancias",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_substancias",
+                  "fields": [
+                    {
+                      "name": "substancia",
+                      "expression": "`substancia`"
+                    },
+                    {
+                      "name": "grupo",
+                      "expression": "`grupo`"
+                    },
+                    {
+                      "name": "valor_recolhido_brl",
+                      "expression": "`valor_recolhido_brl`"
+                    },
+                    {
+                      "name": "pct_valor",
+                      "expression": "`pct_valor`"
+                    },
+                    {
+                      "name": "qtd_municipios",
+                      "expression": "`qtd_municipios`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "substancia",
+                    "displayName": "substância"
+                  },
+                  {
+                    "fieldName": "grupo",
+                    "displayName": "grupo"
+                  },
+                  {
+                    "fieldName": "valor_recolhido_brl",
+                    "displayName": "CFEM",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "BRL",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "pct_valor",
+                    "displayName": "% do valor",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "qtd_municipios",
+                    "displayName": "municípios",
+                    "format": {
+                      "type": "number-plain",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Todas as substâncias do CFEM (2003-2023)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 25,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "notas_bases",
+            "multilineTextboxSpec": {
+              "lines": [
+                "**Notas de tratamento**\n",
+                "\n",
+                "- Na ANM o ferro aparece com dois nomes, **FERRO** e **MINÉRIO DE FERRO**; os dois contam como ferro.\n",
+                "- O `CFEM_Arrecadacao.csv` é a soma exata dos arquivos por faixa de anos (2002-2006 … 2022-2026); só o completo é carregado, para não duplicar.\n",
+                "- A origem do CFEM tem linhas 100% idênticas (ex.: pagamentos de ferro de fev/2024 repetidos); elas são removidas na Silver.\n",
+                "- 2002 tem um único registro de CFEM (repetido), e o Comex termina em 2023: por isso o período de análise é 2003-2023.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 33,
+            "width": 12,
+            "height": 4
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "exportacoes",
+      "displayName": "Exportações",
+      "layout": [
+        {
+          "widget": {
+            "name": "titulo_exp",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Exportações de minério de ferro e aço\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "subtitulo_exp",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Valores FOB em US$ correntes, 2003-2023. Fonte: Comex Stat (MDIC). Clique numa barra ou use o filtro de categoria para recortar a página.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 8,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "filtro_categoria",
+            "queries": [
+              {
+                "name": "q_categoria",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "categoria_produto",
+                      "expression": "`categoria_produto`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "categoria_produto",
+                    "displayName": "Categoria",
+                    "queryName": "q_categoria"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Categoria de produto"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 1,
+            "width": 4,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "linha_exportacao_ano",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "data_ano",
+                      "expression": "`data_ano`"
+                    },
+                    {
+                      "name": "measure(Valor FOB)",
+                      "expression": "MEASURE(`Valor FOB`)"
+                    },
+                    {
+                      "name": "categoria_produto",
+                      "expression": "`categoria_produto`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "data_ano",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "ano"
+                },
+                "y": {
+                  "fieldName": "measure(Valor FOB)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "valor FOB",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "categoria_produto",
+                  "displayName": "categoria_produto",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Minério de ferro",
+                        "color": "#B5532A"
+                      },
+                      {
+                        "value": "Ferro e aço",
+                        "color": "#2F6690"
+                      },
+                      {
+                        "value": "Obras de ferro ou aço",
+                        "color": "#81A4CD"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Valor exportado por ano"
+              },
+              "annotations": [
+                {
+                  "type": "vertical-line",
+                  "encodings": {
+                    "x": {
+                      "dataValue": "2021-01-01",
+                      "dataType": "DATE"
+                    },
+                    "label": {
+                      "value": "Pico do preço do minério"
+                    },
+                    "color": {
+                      "value": "#7A5C99"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "linha_preco_minerio",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "data_ano",
+                      "expression": "`data_ano`"
+                    },
+                    {
+                      "name": "measure(Preço médio US$/t)",
+                      "expression": "MEASURE(`Preço médio US$/t`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`categoria_produto` = 'Minério de ferro'"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "data_ano",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "ano"
+                },
+                "y": {
+                  "fieldName": "measure(Preço médio US$/t)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$/t",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Preço médio do minério de ferro (US$/t)",
+                "showDescription": true,
+                "description": "Valor FOB ÷ toneladas exportadas"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 9,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "linha_preco_aco",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "data_ano",
+                      "expression": "`data_ano`"
+                    },
+                    {
+                      "name": "measure(Preço médio US$/t)",
+                      "expression": "MEASURE(`Preço médio US$/t`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`categoria_produto` = 'Ferro e aço'"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "data_ano",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "ano"
+                },
+                "y": {
+                  "fieldName": "measure(Preço médio US$/t)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "US$/t",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Preço médio de ferro e aço - cap. 72 (US$/t)",
+                "showDescription": true,
+                "description": "Valor FOB ÷ toneladas exportadas"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 9,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_paises_minerio",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "pais",
+                      "expression": "`pais`"
+                    },
+                    {
+                      "name": "measure(Valor FOB)",
+                      "expression": "MEASURE(`Valor FOB`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`grupo` = 'Minério de ferro'"
+                    },
+                    {
+                      "expression": "`pais` <> 'Outros países'"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(Valor FOB)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "valor FOB",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "pais",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "país"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Quem mais compra minério de ferro"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 15,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_paises_aco",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "pais",
+                      "expression": "`pais`"
+                    },
+                    {
+                      "name": "measure(Valor FOB)",
+                      "expression": "MEASURE(`Valor FOB`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`grupo` = 'Aço (cap. 72 e 73)'"
+                    },
+                    {
+                      "expression": "`pais` <> 'Outros países'"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(Valor FOB)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "valor FOB",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "pais",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "país"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Quem mais compra aço (cap. 72 e 73)"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 15,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_uf",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "uf",
+                      "expression": "`uf`"
+                    },
+                    {
+                      "name": "measure(Valor FOB)",
+                      "expression": "MEASURE(`Valor FOB`)"
+                    },
+                    {
+                      "name": "grupo",
+                      "expression": "`grupo`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(Valor FOB)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "valor FOB",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "USD",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "uf",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "UF"
+                },
+                "color": {
+                  "fieldName": "grupo",
+                  "displayName": "grupo",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Minério de ferro",
+                        "color": "#B5532A"
+                      },
+                      {
+                        "value": "Aço (cap. 72 e 73)",
+                        "color": "#2F6690"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Estados que lideram as exportações",
+                "showDescription": true,
+                "description": "UF de origem da mercadoria. A balança comercial não é calculada: a base só tem exportações."
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 22,
+            "width": 12,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "cfem",
+      "displayName": "CFEM",
+      "layout": [
+        {
+          "widget": {
+            "name": "titulo_cfem",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Arrecadação de CFEM\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "subtitulo_cfem",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Compensação Financeira pela Exploração Mineral, em R$ nominais, 2003-2023. Fonte: ANM. Todas as substâncias, com o ferro em destaque.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_cfem_total",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "measure(CFEM arrecadada)",
+                      "expression": "MEASURE(`CFEM arrecadada`)"
+                    },
+                    {
+                      "name": "monthly(data_ano)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `data_ano`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(CFEM arrecadada)",
+                  "displayName": "CFEM arrecadada",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "monthly(data_ano)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "CFEM arrecadada",
+                "showDescription": true,
+                "description": "Todas as substâncias"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_cfem_ferro",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "measure(CFEM do ferro)",
+                      "expression": "MEASURE(`CFEM do ferro`)"
+                    },
+                    {
+                      "name": "monthly(data_ano)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `data_ano`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(CFEM do ferro)",
+                  "displayName": "CFEM do ferro",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "period": {
+                  "fieldName": "monthly(data_ano)"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "CFEM do ferro",
+                "showDescription": true,
+                "description": "FERRO + MINÉRIO DE FERRO"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_cfem_peso",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "measure(Peso do ferro)",
+                      "expression": "MEASURE(`Peso do ferro`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "measure(Peso do ferro)",
+                  "displayName": "Peso do ferro na CFEM",
+                  "format": {
+                    "type": "number-percent",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 1
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Peso do ferro na CFEM"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 2,
+            "width": 4,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_municipios",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "municipio",
+                      "expression": "`municipio`"
+                    },
+                    {
+                      "name": "measure(CFEM arrecadada)",
+                      "expression": "MEASURE(`CFEM arrecadada`)"
+                    },
+                    {
+                      "name": "grupo",
+                      "expression": "`grupo`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`municipio` <> 'Outros municípios'"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "measure(CFEM arrecadada)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "CFEM",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "municipio",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "value"
+                    }
+                  },
+                  "displayName": "município"
+                },
+                "color": {
+                  "fieldName": "grupo",
+                  "displayName": "grupo",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Ferro",
+                        "color": "#B5532A"
+                      },
+                      {
+                        "value": "Outras substâncias",
+                        "color": "#9AA5B1"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Municípios que mais arrecadam CFEM",
+                "showDescription": true,
+                "description": "Cor = parte que vem do ferro x outras substâncias"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 12,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "bar_cfem_ano",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "data_ano",
+                      "expression": "`data_ano`"
+                    },
+                    {
+                      "name": "measure(CFEM arrecadada)",
+                      "expression": "MEASURE(`CFEM arrecadada`)"
+                    },
+                    {
+                      "name": "grupo",
+                      "expression": "`grupo`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "data_ano",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "ano"
+                },
+                "y": {
+                  "fieldName": "measure(CFEM arrecadada)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "CFEM",
+                  "format": {
+                    "type": "number-currency",
+                    "currencyCode": "BRL",
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "type": "max",
+                      "places": 2
+                    }
+                  }
+                },
+                "color": {
+                  "fieldName": "grupo",
+                  "displayName": "grupo",
+                  "scale": {
+                    "type": "categorical",
+                    "mappings": [
+                      {
+                        "value": "Ferro",
+                        "color": "#B5532A"
+                      },
+                      {
+                        "value": "Outras substâncias",
+                        "color": "#9AA5B1"
+                      }
+                    ]
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "CFEM por ano",
+                "showDescription": true,
+                "description": "R$ nominais. Lei 13.540/2017 elevou a alíquota do ferro a partir de 2018."
+              },
+              "annotations": [
+                {
+                  "type": "vertical-line",
+                  "encodings": {
+                    "x": {
+                      "dataValue": "2018-01-01",
+                      "dataType": "DATE"
+                    },
+                    "label": {
+                      "value": "Alíquota do ferro sobe de 2% para 3,5%"
+                    },
+                    "color": {
+                      "value": "#7A5C99"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 12,
+            "height": 7
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "exportacao_x_cfem",
+      "displayName": "Exportação x CFEM",
+      "layout": [
+        {
+          "widget": {
+            "name": "titulo_cruz",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## A arrecadação de CFEM acompanha o preço do minério?\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "subtitulo_cruz",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Período comum às duas bases (2003-2023), tabela `gold.indicadores_periodo_comum`. O preço está em US$ e a CFEM em R$ nominais: câmbio, volume exportado e a mudança de alíquota de 2017 também mexem na CFEM.\n"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_corr_preco",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_correlacao",
+                  "fields": [
+                    {
+                      "name": "corr_preco_cfem",
+                      "expression": "`corr_preco_cfem`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "corr_preco_cfem",
+                  "displayName": "Correlação: preço x CFEM do ferro",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Correlação: preço x CFEM do ferro",
+                "showDescription": true,
+                "description": "2003-2023, não muda com o filtro de anos"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 6,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "kpi_corr_valor",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_correlacao",
+                  "fields": [
+                    {
+                      "name": "corr_valor_cfem",
+                      "expression": "`corr_valor_cfem`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "corr_valor_cfem",
+                  "displayName": "Correlação: valor exportado x CFEM do ferro",
+                  "format": {
+                    "type": "number-plain",
+                    "decimalPlaces": {
+                      "type": "exact",
+                      "places": 2
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Correlação: valor exportado x CFEM do ferro",
+                "showDescription": true,
+                "description": "2003-2023, não muda com o filtro de anos"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 3,
+            "width": 6,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "combo_preco_cfem",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_indicadores",
+                  "fields": [
+                    {
+                      "name": "data_ano",
+                      "expression": "`data_ano`"
+                    },
+                    {
+                      "name": "sum(cfem_ferro_brl)",
+                      "expression": "SUM(`cfem_ferro_brl`)"
+                    },
+                    {
+                      "name": "sum(preco_minerio_usd_t)",
+                      "expression": "SUM(`preco_minerio_usd_t`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "data_ano",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "displayName": "ano"
+                },
+                "y": {
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(cfem_ferro_brl)",
+                        "displayName": "CFEM do ferro (R$)"
+                      }
+                    ]
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(preco_minerio_usd_t)",
+                        "displayName": "Preço do minério (US$/t)"
+                      }
+                    ]
+                  }
+                },
+                "label": {
+                  "show": false
+                }
+              },
+              "annotations": [
+                {
+                  "type": "vertical-line",
+                  "encodings": {
+                    "x": {
+                      "dataValue": "2018-01-01",
+                      "dataType": "DATE"
+                    },
+                    "label": {
+                      "value": "Alíquota do ferro sobe de 2% para 3,5%"
+                    },
+                    "color": {
+                      "value": "#7A5C99"
+                    }
+                  }
+                }
+              ],
+              "frame": {
+                "showTitle": true,
+                "title": "CFEM do ferro (barras) x preço do minério (linha)",
+                "showDescription": true,
+                "description": "Barras em R$ no eixo da esquerda; linha em US$/t no eixo da direita"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 12,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "tabela_indicadores",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ds_indicadores",
+                  "fields": [
+                    {
+                      "name": "ano_texto",
+                      "expression": "`ano_texto`"
+                    },
+                    {
+                      "name": "preco_minerio_usd_t",
+                      "expression": "`preco_minerio_usd_t`"
+                    },
+                    {
+                      "name": "var_preco_minerio",
+                      "expression": "`var_preco_minerio`"
+                    },
+                    {
+                      "name": "exp_minerio_fob_usd",
+                      "expression": "`exp_minerio_fob_usd`"
+                    },
+                    {
+                      "name": "cfem_ferro_brl",
+                      "expression": "`cfem_ferro_brl`"
+                    },
+                    {
+                      "name": "var_cfem_ferro",
+                      "expression": "`var_cfem_ferro`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "ano_texto",
+                    "displayName": "ano"
+                  },
+                  {
+                    "fieldName": "preco_minerio_usd_t",
+                    "displayName": "preço do minério (US$/t)",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "decimalPlaces": {
+                        "type": "exact",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "var_preco_minerio",
+                    "displayName": "var. preço",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "exp_minerio_fob_usd",
+                    "displayName": "exportação de minério",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "USD",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "cfem_ferro_brl",
+                    "displayName": "CFEM do ferro",
+                    "format": {
+                      "type": "number-currency",
+                      "currencyCode": "BRL",
+                      "abbreviation": "compact",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 2
+                      }
+                    }
+                  },
+                  {
+                    "fieldName": "var_cfem_ferro",
+                    "displayName": "var. CFEM",
+                    "format": {
+                      "type": "number-percent",
+                      "decimalPlaces": {
+                        "type": "max",
+                        "places": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Indicadores anuais"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 12,
+            "height": 8
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "filtros",
+      "displayName": "Filtros",
+      "layout": [
+        {
+          "widget": {
+            "name": "filtro_ano",
+            "queries": [
+              {
+                "name": "q_ano_ds_exportacao",
+                "query": {
+                  "datasetName": "ds_exportacao",
+                  "fields": [
+                    {
+                      "name": "min(ano)",
+                      "expression": "MIN(`ano`)"
+                    },
+                    {
+                      "name": "max(ano)",
+                      "expression": "MAX(`ano`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_ano_ds_cfem",
+                "query": {
+                  "datasetName": "ds_cfem",
+                  "fields": [
+                    {
+                      "name": "min(ano)",
+                      "expression": "MIN(`ano`)"
+                    },
+                    {
+                      "name": "max(ano)",
+                      "expression": "MAX(`ano`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "q_ano_ds_indicadores",
+                "query": {
+                  "datasetName": "ds_indicadores",
+                  "fields": [
+                    {
+                      "name": "min(ano)",
+                      "expression": "MIN(`ano`)"
+                    },
+                    {
+                      "name": "max(ano)",
+                      "expression": "MAX(`ano`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "range-slider",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "ano",
+                    "queryName": "q_ano_ds_exportacao"
+                  },
+                  {
+                    "fieldName": "ano",
+                    "queryName": "q_ano_ds_cfem"
+                  },
+                  {
+                    "fieldName": "ano",
+                    "queryName": "q_ano_ds_indicadores"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Anos (2003-2023)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 4,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#F7F6F4",
+        "dark": "#1C2024"
+      },
+      "widgetBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#12161A"
+      },
+      "widgetBorderColor": {
+        "light": "#FFFFFF",
+        "dark": "#12161A"
+      },
+      "fontColor": {
+        "light": "#1E2328",
+        "dark": "#E8ECF0"
+      },
+      "selectionColor": {
+        "light": "#2272B4",
+        "dark": "#8ACAFF"
+      },
+      "visualizationColors": [
+        "#B5532A",
+        "#2F6690",
+        "#81A4CD",
+        "#D9A441",
+        "#3A7D44",
+        "#7A5C99",
+        "#9AA5B1"
+      ],
+      "widgetHeaderAlignment": "LEFT"
+    }
+  }
+}

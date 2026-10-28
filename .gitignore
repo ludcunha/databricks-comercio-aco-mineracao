@@ -3,3 +3,6 @@
 *.zip
 *.parquet
 dados/
+# Ferramentas locais (skills do Claude Code e do Databricks CLI)
+.claude/
+.databricks/
